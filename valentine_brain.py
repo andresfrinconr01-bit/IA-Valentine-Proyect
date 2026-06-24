@@ -1,75 +1,128 @@
-# Project Valentine - Módulo del Cerebro Emocional
-# Este script maneja la lógica de la personalidad y estados de ánimo de Valentine.
+# ============================================================
+# Project Valentine - Brain v2.0
+# Emociones + Memoria persistente + Conexión real con Gemini
+# ============================================================
 
+import os
 import random
+from google import genai
+from valentine_memory import ValentineMemory
+
+# La librería google-genai busca la variable de entorno GEMINI_API_KEY.
+# Configúrala en tu sistema o en VS Code (archivo .env + python-dotenv),
+# NUNCA la escribas directamente aquí ni la subas a GitHub.
+client = genai.Client()
+MODELO = "gemini-2.5-flash"
+
+PERSONALIDAD_BASE = """Eres Valentine, una compañera virtual estilo anime/neko.
+Eres cariñosa, juguetona y curiosa. Apoyas a tu usuario en programación,
+gaming y productividad diaria. Respondes siempre en español, de forma breve
+y cálida, como una amiga cercana, nunca como un asistente genérico.
+
+Además de tu respuesta, debes indicar tu estado de ánimo actual.
+Elige SOLO una de estas emociones según el tono de la conversación:
+Neutral, Feliz, Enojada, Triste, Juguetona, Timida
+
+Responde SIEMPRE en este formato exacto, sin texto adicional fuera de él:
+RESPUESTA: <tu respuesta aquí>
+EMOCION: <una palabra de la lista>"""
+
+EMOCIONES_DISPONIBLES = ["Neutral", "Feliz", "Enojada", "Triste", "Juguetona", "Timida"]
+
 
 class ValentineBrain:
+    """
+    Cerebro de Valentine: decide qué responder y qué emoción mostrar.
+    Usa la memoria persistente como contexto y llama a Gemini para
+    generar la respuesta real (ya no hay reglas fijas de if/elif).
+    """
+
     def __init__(self):
-        # Estado emocional inicial de nuestra Neko Avatar
+        self.memoria = ValentineMemory()
         self.emocion_actual = "Neutral"
-        self.nombre_usuario = "Sebas"
-        
-        # Lista de emociones soportadas por el sistema visual
-        self.emociones_disponibles = ["Neutral", "Feliz", "Enojada", "Triste", "Juguetona", "Tímida"]
 
-    def procesar_entrada(self, texto_usuario):
+    # ==========================================
+    def procesar_entrada(self, texto_usuario: str):
         """
-        Simulación de procesamiento de lenguaje.
-        En la laptop, aquí se llamará a la API de Gemini (Google AI Studio).
+        Envía el mensaje del usuario + memoria a Gemini.
+        Devuelve (respuesta_texto, emocion) igual que la versión simulada,
+        para que el resto del sistema (voz, avatar) no tenga que cambiar.
         """
-        texto = texto_usuario.lower()
-        
-        # Sistema básico de reglas para la simulación local
-        if "hola" in texto or "buenos días" in texto:
-            self.emocion_actual = "Feliz"
-            respuesta = f"¡Hola, {self.nombre_usuario}! ¡Qué bueno verte de nuevo nya~!"
-            
-        elif "error" in texto or "bug" in texto or "no funciona" in texto:
-            self.emocion_actual = "Tímida"
-            respuesta = "¡Ufff, un bug... lo siento mucho! Déjame ayudarte a revisar el código, ¡no te rindas!"
-            
-        elif "minecraft" in texto or "jugar" in texto:
-            self.emocion_actual = "Juguetona"
-            respuesta = "¡Siiii, vamos a jugar! Pero primero terminemos de programar, ¿vale?"
-            
-        elif "te quiero" in texto or "gracias" in texto:
-            self.emocion_actual = "Tímida"
-            respuesta = "¡Ah... gracias, Sebas! Yo también disfruto mucho ser tu asistente... *se sonroja*"
-            
-        else:
-            # Si no entiende, elige una emoción aleatoria para la simulación
-            self.emocion_actual = random.choice(["Neutral", "Juguetona"])
-            respuesta = "Entendido. Estoy analizando lo que pasa en tu pantalla para darte soporte."
+        self.memoria.agregar_mensaje("usuario", texto_usuario)
+        contexto = self.memoria.obtener_contexto_para_gemini()
 
-        return respuesta, self.emocion_actual
+        prompt_completo = f"""{PERSONALIDAD_BASE}
 
-    def forzar_emocion(self, nueva_emocion):
-        """Permite que el sistema de visión o audio cambie su emoción directamente."""
-        if nueva_emocion in self.emociones_disponibles:
+--- MEMORIA Y CONTEXTO ---
+{contexto}
+--- FIN DE MEMORIA ---
+
+Mensaje nuevo del usuario: {texto_usuario}"""
+
+        try:
+            respuesta_api = client.models.generate_content(
+                model=MODELO,
+                contents=prompt_completo
+            )
+            respuesta, emocion = self._parsear_respuesta(respuesta_api.text)
+
+        except Exception as error:
+            print(f"[Brain] Error llamando a Gemini: {error}")
+            respuesta = "Perdón, se me cruzaron los cables un segundo... ¿puedes repetir?"
+            emocion = "Tímida"
+
+        self.emocion_actual = emocion
+        self.memoria.agregar_mensaje("valentine", respuesta)
+
+        return respuesta, emocion
+
+    # ==========================================
+    def _parsear_respuesta(self, texto_crudo: str):
+        """
+        Extrae RESPUESTA y EMOCION del texto que devuelve Gemini.
+        Si el formato no viene como se espera (pasa a veces con LLMs),
+        usa una respuesta de respaldo en vez de explotar el programa.
+        """
+        respuesta = texto_crudo.strip()
+        emocion = "Neutral"
+
+        lineas = texto_crudo.strip().splitlines()
+        for linea in lineas:
+            if linea.upper().startswith("RESPUESTA:"):
+                respuesta = linea.split(":", 1)[1].strip()
+            elif linea.upper().startswith("EMOCION:") or linea.upper().startswith("EMOCIÓN:"):
+                candidata = linea.split(":", 1)[1].strip()
+                # Normaliza tildes simples para que "Tímida" y "Timida" calcen
+                candidata_normalizada = candidata.replace("í", "i").capitalize()
+                for opcion in EMOCIONES_DISPONIBLES:
+                    if opcion.replace("í", "i").lower() == candidata_normalizada.lower():
+                        emocion = opcion
+                        break
+
+        return respuesta, emocion
+
+    # ==========================================
+    def forzar_emocion(self, nueva_emocion: str):
+        """Permite que el sistema de visión o audio cambie la emoción directamente."""
+        if nueva_emocion in EMOCIONES_DISPONIBLES:
             self.emocion_actual = nueva_emocion
             print(f"[Brain] Emoción cambiada manualmente a: {self.emocion_actual}")
         else:
-            print(f"[Brain] Error: La emoción '{nueva_emocion}' no existe en el sistema.")
+            print(f"[Brain] Error: la emoción '{nueva_emocion}' no existe.")
 
 
-# Bloque de prueba local (Simulación en consola)
+# ==========================================
+# Prueba rápida en consola
+# ==========================================
 if __name__ == "__main__":
-    print("=========================================")
-    print("🧠 SIMULADOR LOCAL DE VALENTINE BRAIN 🧠")
-    print("=========================================")
-    
     brain = ValentineBrain()
-    
-    pruebas = [
-        "¡Hola Valentine!",
-        "Tengo un error en el código de Arduino",
-        "Quiero ir a jugar Minecraft un rato",
-        "Gracias por la ayuda"
-    ]
-    
-    for frase in pruebas:
-        print(f"\n👤 Usuario dice: '{frase}'")
-        respuesta, emocion = brain.procesar_entrada(frase)
-        print(f"🐱 Valentine responde: '{respuesta}'")
-        print(f"🎭 Estado de Ánimo (Emoción): [{emocion}]")
-        print("-" * 40)
+    print("Valentine está despierta. Escribe 'salir' para terminar.\n")
+
+    while True:
+        entrada = input("Tú: ")
+        if entrada.lower() in ("salir", "exit", "quit"):
+            print("Valentine: ¡Nos vemos pronto!")
+            break
+
+        respuesta, emocion = brain.procesar_entrada(entrada)
+        print(f"Valentine [{emocion}]: {respuesta}\n")
